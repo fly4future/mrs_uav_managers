@@ -74,7 +74,7 @@ namespace mrs_uav_managers
       std::shared_ptr<mrs_lib::SafetyZone> safety_zone_;
       ros::NodeHandle nh_;
       std::atomic<bool> is_initialized_ = false;
-      std::atomic<bool> set_latlon_set_ = false;
+      /* std::atomic<bool> set_latlon_set_ = false; */
 
       // | ------------------- scope timer logger ------------------- |
 
@@ -113,7 +113,6 @@ namespace mrs_uav_managers
       std::mutex mutex_safety_area_;
 
       // Visualization objects
-      geometry_msgs::TransformStamped tf_viz_;
       std::vector<std::unique_ptr<mrs_lib::StaticEdgesVisualization>> static_edges_;
       std::vector<std::unique_ptr<mrs_lib::IntEdgesVisualization>> int_edges_;
       std::vector<std::unique_ptr<mrs_lib::VertexControl>> vertices_;
@@ -463,26 +462,6 @@ namespace mrs_uav_managers
         return;
       }
 
-      auto ret = transformer_->getTransform(safety_area_horizontal_frame_, "local_origin", ros::Time(0));
-      if (ret)
-      {
-        ROS_INFO_ONCE("[SafetyAreaManager]: got TFs, can publish safety area markers");
-        tf_viz_ = ret.value();
-      } else
-      {
-        ROS_INFO_ONCE("[SafetyAreaManager]: Did not got TFs, can't publish safety area markers");
-        return;
-      }
-
-      // We need to have the UTM zone established to be able to transform 'latlon_origin' input points
-      if (!set_latlon_set_)
-      {
-        ROS_INFO_ONCE("[SafetyAreaManager]: Waiting for UTM Zone.");
-        return;
-      }
-
-      // Note: all the hw_ap_capabilities seemed to be useless
-
       initialize();
       timer_hw_api_capabilities_.stop();
     }
@@ -577,7 +556,6 @@ namespace mrs_uav_managers
       mrs_lib::ScopeTimer timer = mrs_lib::ScopeTimer("SafetyAreaManager::callbackGNSS", scope_timer_logger_, scope_timer_enabled_);
 
       transformer_->setLatLon(msg->latitude, msg->longitude);
-      set_latlon_set_ = true;
     }
 
     //}
@@ -1703,34 +1681,26 @@ namespace mrs_uav_managers
     std::vector<mrs_lib::Point2d> SafetyAreaManager::transformPoints(const std::vector<mrs_lib::Point2d>& points, const std::string& from_frame,
                                                                      const std::string& to_frame)
     {
-
-      // Transforming into local origin for visualization
-
       std::vector<mrs_lib::Point2d> transformed_points;
       mrs_msgs::ReferenceStamped temp_ref;
 
       for (const auto& point : points)
       {
-        temp_ref.header.frame_id = safety_area_horizontal_frame_;
+        temp_ref.header.frame_id = from_frame; // Fixed to use 'from_frame' properly
         temp_ref.header.stamp = ros::Time(0);
         temp_ref.reference.position.x = boost::geometry::get<0>(point);
         temp_ref.reference.position.y = boost::geometry::get<1>(point);
         temp_ref.reference.position.z = 0;
 
-        /* ROS_INFO_STREAM("[SafetyAreaManager]:  Original point x: " << boost::geometry::get<0>(point) << " y: " << boost::geometry::get<1>(point)); */
-
-        auto ret = transformer_->getTransform(from_frame, to_frame, ros::Time(0));
-        if (ret)
-        {
-          ROS_INFO_ONCE("[SafetyAreaManager]: got TFs, can publish safety area markers");
-          tf_viz_ = ret.value();
-        }
-
-        if (auto ret = transformer_->transform(temp_ref, tf_viz_))
+        // Use direct transformSingle instead of relying on a globally cached tf_viz_
+        if (auto ret = transformer_->transformSingle(temp_ref, to_frame))
         {
           temp_ref = ret.value();
-          /* ROS_INFO_STREAM("[SafetyAreaManager]: Transformed point x: " << temp_ref.reference.position.x << " y: " << temp_ref.reference.position.y); */
           transformed_points.emplace_back(mrs_lib::Point2d{temp_ref.reference.position.x, temp_ref.reference.position.y});
+        }
+        else 
+        {
+          ROS_WARN_THROTTLE(1.0, "[SafetyAreaManager]: Could not transform point from %s to %s.", from_frame.c_str(), to_frame.c_str());
         }
       }
 
