@@ -726,7 +726,7 @@ bool SafetyAreaManager::callbackSetSafetyArea(mrs_msgs::SetSafetyAreaSrv::Reques
 
   auto control_manager_diagnostics = sh_control_manager_diag_.getMsg();
 
-  if (control_manager_diagnostics->tracker_status.have_goal) {
+  if (control_manager_diagnostics && control_manager_diagnostics->tracker_status.have_goal) {
 
     ROS_WARN("[SafetyAreaManager]: Can only modify safety area in IDLE state");
     res.message = "Can only modify safety area in IDLE state.";
@@ -796,7 +796,7 @@ bool SafetyAreaManager::callbackSetWorldConfig(mrs_msgs::String::Request& req, m
 
   auto control_manager_diagnostics = sh_control_manager_diag_.getMsg();
 
-  if (control_manager_diagnostics->tracker_status.have_goal) {
+  if (control_manager_diagnostics && control_manager_diagnostics->tracker_status.have_goal) {
     ROS_WARN("[SafetyAreaManager]: Can only modify safety area in IDLE state");
     res.message = "Can only modify safety area in IDLE state.";
     res.success = false;
@@ -1428,9 +1428,7 @@ bool SafetyAreaManager::initializationFromMsg(const mrs_msgs::SafetyArea& safety
 
       // Extracting subset of points for current obstacle
       int                            num_points = rows.at(i);
-      std::vector<mrs_msgs::Point2D> obstacle_points(obstacles_data.begin() + current_idx, obstacles_data.begin() + current_idx + num_points
-
-      );
+      std::vector<mrs_msgs::Point2D> obstacle_points(obstacles_data.begin() + current_idx, obstacles_data.begin() + current_idx + num_points);
 
       // Create obstacle
       Obstacle obstacle(obstacle_points, max_z_values.at(i), min_z_values.at(i));
@@ -1630,6 +1628,11 @@ double SafetyAreaManager::transformZ(const std::string& current_frame, const std
 
 bool SafetyAreaManager::isPointInSafetyArea2d(const mrs_msgs::ReferenceStamped& point) {
 
+  if (!is_initialized_) {
+    ROS_WARN("[SafetyAreaManager]: Cannot validate isPointInSafetyArea2d, not initialized!");
+    return false;
+  }
+
   if (!use_safety_area_) {
     return true;
   }
@@ -1642,8 +1645,11 @@ bool SafetyAreaManager::isPointInSafetyArea2d(const mrs_msgs::ReferenceStamped& 
     return false;
   }
 
-  if (!safety_zone_->isPointValid(tfed_horizontal->reference.position.x, tfed_horizontal->reference.position.y)) {
-    return false;
+  {
+    std::scoped_lock lock(mutex_safety_area_);
+    if (!safety_zone_->isPointValid(tfed_horizontal->reference.position.x, tfed_horizontal->reference.position.y)) {
+      return false;
+    }
   }
 
   return true;
@@ -1655,6 +1661,11 @@ bool SafetyAreaManager::isPointInSafetyArea2d(const mrs_msgs::ReferenceStamped& 
 
 bool SafetyAreaManager::isPointInSafetyArea3d(const mrs_msgs::ReferenceStamped& point) {
 
+  if (!is_initialized_) {
+    ROS_WARN("[SafetyAreaManager]: Cannot validate isPointInSafetyArea2d, not initialized!");
+    return false;
+  }
+
   if (!use_safety_area_) {
     return true;
   }
@@ -1668,9 +1679,12 @@ bool SafetyAreaManager::isPointInSafetyArea3d(const mrs_msgs::ReferenceStamped& 
     return false;
   }
 
-  if (!safety_zone_->isPointValid(tfed_horizontal->reference.position.x, tfed_horizontal->reference.position.y, tfed_horizontal->reference.position.z)) {
-    ROS_INFO("[SafetyAreaManager]: Point is not valid!");
-    return false;
+  {
+    std::scoped_lock lock(mutex_safety_area_);
+    if (!safety_zone_->isPointValid(tfed_horizontal->reference.position.x, tfed_horizontal->reference.position.y, tfed_horizontal->reference.position.z)) {
+      ROS_INFO("[SafetyAreaManager]: Point is not valid!");
+      return false;
+    }
   }
 
   return true;
@@ -1725,7 +1739,12 @@ bool SafetyAreaManager::isPathToPointInSafetyArea2d(const mrs_msgs::ReferenceSta
   end_point.set<0>(end_transformed.reference.position.x);
   end_point.set<1>(end_transformed.reference.position.y);
 
-  return safety_zone_->isPathValid(start_point, end_point);
+  bool is_valid = false;
+  {
+    std::scoped_lock lock(mutex_safety_area_);
+    is_valid = safety_zone_->isPathValid(start_point, end_point);
+  }
+  return ret;
 }
 
 //}
@@ -1779,7 +1798,13 @@ bool SafetyAreaManager::isPathToPointInSafetyArea3d(const mrs_msgs::ReferenceSta
   end_point.set<1>(end_transformed.reference.position.y);
   end_point.set<2>(end_transformed.reference.position.z);
 
-  return safety_zone_->isPathValid(start_point, end_point);
+
+  bool is_valid = false;
+  {
+    std::scoped_lock lock(mutex_safety_area_);
+    is_valid = safety_zone_->isPathValid(start_point, end_point);
+  }
+  return is_valid;
 }
 
 //}
@@ -1796,7 +1821,11 @@ double SafetyAreaManager::getMaxZ(const std::string& frame_id) {
   point.header.frame_id = safety_area_horizontal_frame_;
   point.point.x         = 0;
   point.point.y         = 0;
-  point.point.z         = safety_zone_->getBorder()->getMaxZ();
+
+  {
+    std::scoped_lock lock(mutex_safety_area_);
+    point.point.z = safety_zone_->getBorder()->getMaxZ();
+  }
 
   auto ret = transformer_->transformSingle(point, frame_id);
 
@@ -1844,16 +1873,21 @@ double SafetyAreaManager::getMaxZ(const std::string& frame_id) {
 double SafetyAreaManager::getMinZ(const std::string& frame_id) {
 
   // | ---------- first, get max_z from the safety area --------- |
-
-  if (!safety_zone_->safetyZoneEnabled()) {
-    return std::numeric_limits<float>::lowest();
+  {
+    std::scoped_lock lock(mutex_safety_area_);
+    if (!safety_zone_->safetyZoneEnabled()) {
+      return std::numeric_limits<float>::lowest();
+    }
   }
 
   geometry_msgs::PointStamped point;
   point.header.frame_id = safety_area_horizontal_frame_;
   point.point.x         = 0;
   point.point.y         = 0;
-  point.point.z         = safety_zone_->getBorder()->getMinZ();
+  {
+    std::scoped_lock lock(mutex_safety_area_);
+    point.point.z = safety_zone_->getBorder()->getMinZ();
+  }
 
   auto ret = transformer_->transformSingle(point, frame_id);
 
