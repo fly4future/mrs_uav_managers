@@ -1744,7 +1744,7 @@ bool SafetyAreaManager::isPathToPointInSafetyArea2d(const mrs_msgs::ReferenceSta
     std::scoped_lock lock(mutex_safety_area_);
     is_valid = safety_zone_->isPathValid(start_point, end_point);
   }
-  return ret;
+  return is_valid;
 }
 
 //}
