@@ -147,7 +147,7 @@ mrs_msgs::msg::SensorStatus DiagnosticsSensorHandler::updateStatus() {
     mrs_lib::errorgraph::node_id_t source_node;
     source_node.node      = expected_publisher_node_;
     source_node.component = expected_publisher_component_;
-    error_publisher_->addWaitingForTopicError(topic_, source_node);
+    error_publisher_->addWaitingForTopicError(topic_, source_node, name_);
     ss.details = fill_details();
     return ss;
   }
@@ -162,7 +162,7 @@ mrs_msgs::msg::SensorStatus DiagnosticsSensorHandler::updateStatus() {
     mrs_lib::errorgraph::node_id_t source_node;
     source_node.node      = expected_publisher_node_;
     source_node.component = expected_publisher_component_;
-    error_publisher_->addWaitingForTopicError(topic_, source_node);
+    error_publisher_->addWaitingForTopicError(topic_, source_node, name_);
     ss.details = fill_details();
     return ss;
   }

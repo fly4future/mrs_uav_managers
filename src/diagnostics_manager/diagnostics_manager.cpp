@@ -497,7 +497,7 @@ void DiagnosticsManager::timerErrorPublishing() {
   // ErrorPublisher clears its errors after every publish, so persistent errors must be re-added every tick.
   for (size_t i = 0; i < failed_sensor_handlers_.size(); i++) {
     const auto &failed = failed_sensor_handlers_[i];
-    error_publisher_->addGeneralError(static_cast<mrs_lib::errorgraph::ErrorPublisher::error_id_t>(i), "Sensor handler " + failed.name + ": " + failed.message);
+    error_publisher_->addGeneralError(static_cast<mrs_lib::errorgraph::ErrorPublisher::error_id_t>(i), failed.message, failed.name);
   }
 
   std::scoped_lock lck(errorgraph_mtx_);
