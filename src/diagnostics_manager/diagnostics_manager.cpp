@@ -1,5 +1,8 @@
 #include <mrs_uav_managers/diagnostics_manager/diagnostics_manager.hpp>
 
+#include <map>
+#include <tuple>
+
 namespace mrs_uav_managers::diagnostics_manager
 {
 
@@ -738,10 +741,22 @@ mrs_msgs::msg::GeneralRobotInfo DiagnosticsManager::parse_general_robot_info(sen
   { // find all errors
     std::scoped_lock lck(errorgraph_mtx_);
 
+    // Group waiters blocked on the same (topic, expected publisher) into one line.
+    struct TopicWaitKey
+    {
+      std::string topic;
+      std::string publisher_node;
+      std::string publisher_comp;
+      bool        operator<(const TopicWaitKey &other) const {
+        return std::tie(topic, publisher_node, publisher_comp) < std::tie(other.topic, other.publisher_node, other.publisher_comp);
+      }
+    };
+    std::map<TopicWaitKey, std::vector<std::string>> topic_waits;
+
     const auto error_roots = errorgraph_.find_error_roots();
     for (const auto &root : error_roots) {
       std::visit(
-          [&msg](const auto &info) {
+          [&msg, &topic_waits](const auto &info) {
             using T = std::decay_t<decltype(info)>;
             if (info.not_reporting) {
               std::stringstream ss;
@@ -751,9 +766,25 @@ mrs_msgs::msg::GeneralRobotInfo DiagnosticsManager::parse_general_robot_info(sen
             if constexpr (std::is_same_v<T, mrs_lib::errorgraph::Errorgraph::node_info_t>) {
               for (const auto &error : info.errors)
                 msg.errors.push_back(error.type);
+            } else {
+              const TopicWaitKey key{info.topic_name, info.expected_publisher.node, info.expected_publisher.component};
+              std::stringstream  waiter;
+              waiter << info.source_node.node << "." << info.source_node.component;
+              topic_waits[key].push_back(waiter.str());
             }
           },
           root);
+    }
+
+    for (const auto &[key, waiters] : topic_waits) {
+      std::stringstream ss;
+      for (size_t i = 0; i < waiters.size(); i++) {
+        if (i > 0)
+          ss << ", ";
+        ss << waiters[i];
+      }
+      ss << ": waiting for topic " << key.topic << " (expected from " << key.publisher_node << "." << key.publisher_comp << ")";
+      msg.errors.push_back(ss.str());
     }
   }
   return msg;
