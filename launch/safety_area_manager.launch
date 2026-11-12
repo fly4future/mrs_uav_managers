@@ -14,6 +14,7 @@
   <arg name="nodelet_manager_name" default="$(optenv NODELET_MANAGER)" />
 
   <arg name="world_config" default="" />
+  <arg name="respawn" default="true" />
 
   <env name="ROSCONSOLE_CONFIG_FILE" if="$(eval arg('LOGGER_DEBUG'))" value="$(find mrs_uav_managers)/config/debug_verbosity.yaml" />
 
@@ -30,7 +31,8 @@
 
 
   <group ns="$(arg UAV_NAME)">
-    <node pkg="nodelet" type="nodelet" name="safety_area_manager" args="$(arg nodelet) mrs_uav_managers/SafetyAreaManager $(arg nodelet_manager) $(arg bond_suffix)" output="screen" launch-prefix="$(arg launch_prefix)">
+    <!-- respawn after a crash; the node restores its last safety area -->
+    <node pkg="nodelet" type="nodelet" name="safety_area_manager" args="$(arg nodelet) mrs_uav_managers/SafetyAreaManager $(arg nodelet_manager) $(arg bond_suffix)" output="screen" launch-prefix="$(arg launch_prefix)" respawn="$(arg respawn)" respawn_delay="2">
 
     <!-- Load the default param files -->
     <param name="private_config" value="$(find mrs_uav_managers)/config/private/safety_area_manager/safety_area_manager.yaml" />

@@ -51,6 +51,8 @@
 #include <geometry_msgs/Polygon.h>
 #include <iostream>
 #include <fstream>
+#include <sstream>
+#include <cstdio>
 #include <limits>
 #include <memory>
 #include <boost/geometry.hpp>
@@ -110,6 +112,16 @@ private:
   std::vector<double>            obstacles_min_z_;
   std::mutex                     mutex_safety_area_;   // guards safety_zone_, its visualizations and the config
   std::mutex                     mutex_set_world_config_;  // serializes set_world_config (shared temp file)
+
+  // | ------------- last good config (crash recovery) ------------ |
+  // restored only when respawned within the same roscore session
+  std::string last_good_path_;
+  std::string last_good_yaml_;  // currently applied config
+  std::string sessionTag();
+  void        persistLastGood(const std::string& yaml_text);
+  void        persistCurrentZone();
+  bool        readLastGood(std::string& yaml_text, bool& enabled);
+  void        clearZoneAndVisualizations();
 
   // Visualization objects
   std::vector<std::unique_ptr<mrs_lib::StaticEdgesVisualization>> static_edges_;
@@ -297,6 +309,7 @@ void SafetyAreaManager::preinitialize() {
 
   param_loader.loadParam("uav_name", _uav_name_);
   param_loader.loadParam("enable_profiler", profiler_enabled_);
+  last_good_path_ = param_loader.loadParam2<std::string>("last_good_config_file", "/tmp/safety_area_manager_" + _uav_name_ + "_last_good.yaml");
 
   _yaml_prefix_ = "mrs_uav_managers/safety_area_manager/";
   param_loader.loadParam(_yaml_prefix_ + "status_timer_rate", status_timer_rate_);
@@ -362,9 +375,51 @@ void SafetyAreaManager::initialize() {
   // Note: safety_zone is initialized even if the use_safety_area_ is false
   // The manager will just always return true untill it's turned on
   bool safety_zone_inited = false;
+
+  // respawned within the same roscore session: restore the last applied config
+  {
+    std::string restored_yaml;
+    bool        restored_enabled = false;
+    if (readLastGood(restored_yaml, restored_enabled)) {
+      const std::string restore_file = last_good_path_ + ".restore";
+      std::ofstream     ofs(restore_file, std::ofstream::out | std::ofstream::trunc);
+      ofs << restored_yaml;
+      ofs.close();
+      try {
+        std::scoped_lock     lock(mutex_safety_area_);
+        mrs_lib::ParamLoader restore_loader(nh_, "SafetyAreaManager");
+        safety_zone_inited = initializationFromFile(restore_loader, restore_file);
+        if (safety_zone_inited && safety_zone_) {
+          use_safety_area_ = restored_enabled;
+          safety_zone_->enableSafetyZone(use_safety_area_);
+          last_good_yaml_ = restored_yaml;
+          ROS_WARN("[SafetyAreaManager]: restarted within the same session: restored the last applied safety area from '%s' (safety area %s)",
+                   last_good_path_.c_str(), use_safety_area_ ? "enabled" : "disabled");
+        }
+      }
+      catch (std::exception& e) {
+        ROS_ERROR("[SafetyAreaManager]: could not restore the last applied safety area: %s", e.what());
+        safety_zone_inited = false;
+      }
+      if (!safety_zone_inited) {
+        ROS_ERROR("[SafetyAreaManager]: restoring the last applied safety area failed, falling back to '%s'", _world_config_.c_str());
+        std::scoped_lock lock(mutex_safety_area_);
+        clearZoneAndVisualizations();
+      }
+    }
+  }
+
   try {
     std::scoped_lock lock(mutex_safety_area_);
-    safety_zone_inited = initializationFromFile(param_loader, _world_config_);
+    if (!safety_zone_inited) {
+      safety_zone_inited = initializationFromFile(param_loader, _world_config_);
+      if (safety_zone_inited) {
+        std::ifstream     ifs(_world_config_);
+        std::stringstream ss;
+        ss << ifs.rdbuf();
+        persistLastGood(ss.str());  // remember the launch config too
+      }
+    }
   }
   catch (std::invalid_argument& e) {
     ROS_ERROR("[SafetyAreaManager]: Wrong configuration for the safety zone polygons. %s", e.what());
@@ -586,6 +641,8 @@ bool SafetyAreaManager::callbackAddObstacle(mrs_msgs::ReferenceStampedSrv::Reque
   centers_.push_back(std::make_unique<mrs_lib::CenterControl>(safety_zone_.get(), id, _uav_name_, safety_area_horizontal_frame_, nh_));
   bounds_.push_back(std::make_unique<mrs_lib::BoundsControl>(safety_zone_.get(), id, _uav_name_, safety_area_horizontal_frame_, nh_));
 
+  persistCurrentZone();
+
   return true;
 }
 
@@ -621,6 +678,8 @@ bool SafetyAreaManager::callbackSetObstacle(mrs_msgs::SetObstacleSrv::Request& r
   centers_.push_back(std::make_unique<mrs_lib::CenterControl>(safety_zone_.get(), id, _uav_name_, safety_area_horizontal_frame_, nh_));
   bounds_.push_back(std::make_unique<mrs_lib::BoundsControl>(safety_zone_.get(), id, _uav_name_, safety_area_horizontal_frame_, nh_));
 
+  persistCurrentZone();
+
   return true;
 }
 
@@ -636,6 +695,9 @@ bool SafetyAreaManager::callbackToggleSafetyArea(std_srvs::SetBool::Request& req
   std::scoped_lock lock(mutex_safety_area_);
   use_safety_area_ = req.data;
   safety_zone_->enableSafetyZone(req.data);
+  if (!last_good_yaml_.empty()) {
+    persistLastGood(last_good_yaml_);  // store the new enabled state
+  }
   res.success = true;
   ROS_INFO("[SafetyAreaManager]: safety area usage has been turned %s", (use_safety_area_ ? "on" : "off"));
   return true;
@@ -720,6 +782,13 @@ bool SafetyAreaManager::callbackLoadWorldConfig(mrs_msgs::String::Request& req, 
   if (safety_zone_)
     safety_zone_->enableSafetyZone(use_safety_area_);
 
+  {
+    std::ifstream     ifs(req.value);
+    std::stringstream ss;
+    ss << ifs.rdbuf();
+    persistLastGood(ss.str());
+  }
+
   res.message = "Successfully loaded world config.";
   res.success = true;
   return true;
@@ -798,6 +867,7 @@ bool SafetyAreaManager::callbackSetSafetyArea(mrs_msgs::SetSafetyAreaSrv::Reques
     return true;
   }
 
+  persistCurrentZone();
   ROS_INFO("[SafetyAreaManager]: Succesfull service call, world config loaded.");
   res.message = "Succesfully loaded safety area msg.";
   res.success = true;
@@ -2105,6 +2175,81 @@ void SafetyAreaManager::getSafetyZoneData(void) {
       }
     }
   }
+}
+
+//}
+
+/* last good config helpers //{ */
+
+std::string SafetyAreaManager::sessionTag() {
+  std::string run_id;
+  ros::param::get("/run_id", run_id);  // new for every roscore start
+  std::string   boot_id;
+  std::ifstream bfs("/proc/sys/kernel/random/boot_id");
+  std::getline(bfs, boot_id);
+  return "run_id=" + run_id + " boot_id=" + boot_id;
+}
+
+// call with mutex_safety_area_ held
+void SafetyAreaManager::persistLastGood(const std::string& yaml_text) {
+  last_good_yaml_ = yaml_text;
+  const std::string tmp = last_good_path_ + ".tmp";
+  {
+    std::ofstream ofs(tmp, std::ofstream::out | std::ofstream::trunc);
+    if (!ofs.is_open()) {
+      ROS_WARN_THROTTLE(10.0, "[SafetyAreaManager]: could not write '%s', crash recovery of the safety area is not available", tmp.c_str());
+      return;
+    }
+    ofs << "# SafetyAreaManager last applied config, used only when respawned within the same session\n";
+    ofs << "# session: " << sessionTag() << "\n";
+    ofs << "# enabled: " << (use_safety_area_ ? 1 : 0) << "\n";
+    ofs << yaml_text;
+  }
+  std::rename(tmp.c_str(), last_good_path_.c_str());  // atomic replace
+}
+
+// call with mutex_safety_area_ held
+void SafetyAreaManager::persistCurrentZone() {
+  mrs_lib::YamlExportVisitor visitor(_uav_name_, safety_area_horizontal_frame_, safety_area_horizontal_frame_, safety_area_vertical_frame_, world_origin_units_,
+                                     origin_x_, origin_y_, transformer_);
+  safety_zone_->accept(visitor);
+  if (visitor.isSuccessful()) {
+    persistLastGood(visitor.getResult());
+  }
+}
+
+bool SafetyAreaManager::readLastGood(std::string& yaml_text, bool& enabled) {
+  std::ifstream ifs(last_good_path_);
+  if (!ifs.is_open()) {
+    return false;
+  }
+  std::string title, session, enabled_line;
+  std::getline(ifs, title);
+  std::getline(ifs, session);
+  std::getline(ifs, enabled_line);
+  if (session != "# session: " + sessionTag()) {
+    ROS_INFO("[SafetyAreaManager]: '%s' is from a previous session, starting from the world config file", last_good_path_.c_str());
+    return false;
+  }
+  if (enabled_line.rfind("# enabled: ", 0) != 0) {
+    return false;
+  }
+  enabled = enabled_line.substr(11) == "1";
+  std::stringstream ss;
+  ss << ifs.rdbuf();
+  yaml_text = ss.str();
+  return !yaml_text.empty();
+}
+
+// call with mutex_safety_area_ held; visualizations first, they point into the zone
+void SafetyAreaManager::clearZoneAndVisualizations() {
+  static_edges_.clear();
+  int_edges_.clear();
+  vertices_.clear();
+  centers_.clear();
+  bounds_.clear();
+  safety_zone_.reset();
+  common_handlers_->safety_zone.reset();
 }
 
 //}
