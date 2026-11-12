@@ -108,7 +108,7 @@ private:
   std::vector<int>               obstacles_rows_;
   std::vector<double>            obstacles_max_z_;
   std::vector<double>            obstacles_min_z_;
-  std::mutex                     mutex_safety_area_;
+  std::mutex                     mutex_safety_area_;   // guards safety_zone_, its visualizations and the config
 
   // Visualization objects
   std::vector<std::unique_ptr<mrs_lib::StaticEdgesVisualization>> static_edges_;
@@ -630,6 +630,7 @@ bool SafetyAreaManager::callbackToggleSafetyArea(std_srvs::SetBool::Request& req
     res.success = false;
     return true;
   }
+  std::scoped_lock lock(mutex_safety_area_);
   use_safety_area_ = req.data;
   safety_zone_->enableSafetyZone(req.data);
   res.success = true;
@@ -834,6 +835,8 @@ bool SafetyAreaManager::callbackValidatePoint3d(mrs_msgs::ReferenceStampedSrv::R
     return true;
   }
 
+  std::scoped_lock lock(mutex_safety_area_);
+
   if (!use_safety_area_) {
     res.success = true;
     res.message = "Safety area is disabled";
@@ -881,7 +884,7 @@ bool SafetyAreaManager::callbackSaveWorldConfig(mrs_msgs::String::Request& req, 
     return true;
   }
 
-  /* std::scoped_lock lock(mutex_safety_area_); */
+  std::scoped_lock lock(mutex_safety_area_);
 
   mrs_lib::YamlExportVisitor visitor(_uav_name_, safety_area_horizontal_frame_, safety_area_horizontal_frame_, safety_area_vertical_frame_, world_origin_units_,
                                      origin_x_, origin_y_, transformer_);
@@ -952,6 +955,8 @@ bool SafetyAreaManager::callbackValidatePoint2d(mrs_msgs::ReferenceStampedSrv::R
     return true;
   }
 
+  std::scoped_lock lock(mutex_safety_area_);
+
   if (!use_safety_area_) {
     res.success = true;
     res.message = "Safety area is disabled";
@@ -992,6 +997,8 @@ bool SafetyAreaManager::callbackValidatePathToPoint3d(mrs_msgs::PathToPointInSaf
     res.success = false;
     return true;
   }
+
+  std::scoped_lock lock(mutex_safety_area_);
 
   if (!use_safety_area_) {
     res.success = true;
@@ -1061,6 +1068,8 @@ bool SafetyAreaManager::callbackValidatePathToPoint2d(mrs_msgs::PathToPointInSaf
     return true;
   }
 
+  std::scoped_lock lock(mutex_safety_area_);
+
   if (!use_safety_area_) {
     res.success = true;
     res.message = "Safety area is disabled";
@@ -1125,6 +1134,8 @@ bool SafetyAreaManager::callbackGetSafeZoneAtHeight(mrs_msgs::GetSafeZoneAtHeigh
     return true;
   }
 
+  std::scoped_lock lock(mutex_safety_area_);
+
   // Transform height to the current frame
   double height = transformZ(req.header.frame_id, safety_area_horizontal_frame_, req.height);
 
@@ -1132,9 +1143,6 @@ bool SafetyAreaManager::callbackGetSafeZoneAtHeight(mrs_msgs::GetSafeZoneAtHeigh
   if (safety_zone_->getBorder()->getMaxZ() < height || height < safety_zone_->getBorder()->getMinZ()) {
     return true;
   }
-
-
-  std::scoped_lock lock(mutex_safety_area_);
 
   // Set response header
   res.header.frame_id = _uav_name_ + "/" + safety_area_horizontal_frame_;
@@ -1181,6 +1189,8 @@ bool SafetyAreaManager::callbackGetMaxZ([[maybe_unused]] mrs_msgs::GetPointStamp
     return true;
   }
 
+  std::scoped_lock lock(mutex_safety_area_);
+
   res.result.header.frame_id = safety_area_horizontal_frame_;
   res.result.point.x         = 0;
   res.result.point.y         = 0;
@@ -1205,6 +1215,8 @@ bool SafetyAreaManager::callbackGetMinZ([[maybe_unused]] mrs_msgs::GetPointStamp
     return true;
   }
 
+  std::scoped_lock lock(mutex_safety_area_);
+
   res.result.header.frame_id = safety_area_horizontal_frame_;
   res.result.point.x         = 0;
   res.result.point.y         = 0;
@@ -1227,6 +1239,7 @@ bool SafetyAreaManager::callbackGetUse([[maybe_unused]] mrs_msgs::GetBool::Reque
     return true;
   }
 
+  std::scoped_lock lock(mutex_safety_area_);
   res.result = use_safety_area_;
   return true;
 }
@@ -1633,6 +1646,8 @@ bool SafetyAreaManager::isPointInSafetyArea2d(const mrs_msgs::ReferenceStamped& 
     return false;
   }
 
+  std::scoped_lock lock(mutex_safety_area_);
+
   if (!use_safety_area_) {
     return true;
   }
@@ -1645,11 +1660,8 @@ bool SafetyAreaManager::isPointInSafetyArea2d(const mrs_msgs::ReferenceStamped& 
     return false;
   }
 
-  {
-    std::scoped_lock lock(mutex_safety_area_);
-    if (!safety_zone_->isPointValid(tfed_horizontal->reference.position.x, tfed_horizontal->reference.position.y)) {
-      return false;
-    }
+  if (!safety_zone_->isPointValid(tfed_horizontal->reference.position.x, tfed_horizontal->reference.position.y)) {
+    return false;
   }
 
   return true;
@@ -1666,6 +1678,8 @@ bool SafetyAreaManager::isPointInSafetyArea3d(const mrs_msgs::ReferenceStamped& 
     return false;
   }
 
+  std::scoped_lock lock(mutex_safety_area_);
+
   if (!use_safety_area_) {
     return true;
   }
@@ -1679,12 +1693,9 @@ bool SafetyAreaManager::isPointInSafetyArea3d(const mrs_msgs::ReferenceStamped& 
     return false;
   }
 
-  {
-    std::scoped_lock lock(mutex_safety_area_);
-    if (!safety_zone_->isPointValid(tfed_horizontal->reference.position.x, tfed_horizontal->reference.position.y, tfed_horizontal->reference.position.z)) {
-      ROS_INFO("[SafetyAreaManager]: Point is not valid!");
-      return false;
-    }
+  if (!safety_zone_->isPointValid(tfed_horizontal->reference.position.x, tfed_horizontal->reference.position.y, tfed_horizontal->reference.position.z)) {
+    ROS_INFO("[SafetyAreaManager]: Point is not valid!");
+    return false;
   }
 
   return true;
