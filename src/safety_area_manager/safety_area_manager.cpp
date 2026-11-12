@@ -761,31 +761,40 @@ bool SafetyAreaManager::callbackSetSafetyArea(mrs_msgs::SetSafetyAreaSrv::Reques
   auto old_origin_y                     = origin_y_;
   auto old_origin_x                     = origin_x_;
   auto old_use_safety_area              = use_safety_area_;
-  safety_zone_->enableSafetyZone(use_safety_area_);
 
-  bool success = initializationFromMsg(req.safety_area);
+  bool success = false;
+  try {
+    success = initializationFromMsg(req.safety_area);
+  }
+  catch (std::exception& e) {
+    ROS_WARN("[SafetyAreaManager]: Exception while setting safety area: %s", e.what());
+    success = false;
+  }
 
   if (!success) {
     ROS_WARN("[SafetyAreaManager]: Could not load world config. Please, check the config file.");
     res.message = "Could not load world config. Please, check the config file.";
     res.success = false;
 
-    // Restore from backup, if successful no need to delete the backups as they will get destroyed automatically
-    safety_zone_                  = std::move(old_safety_zone);
+    // Restore from backup, visualizations first (they point into the zone)
     static_edges_                 = std::move(old_static_edges);
     int_edges_                    = std::move(old_int_edges);
     vertices_                     = std::move(old_vertices);
     centers_                      = std::move(old_centers);
     bounds_                       = std::move(old_bounds);
+    safety_zone_                  = std::move(old_safety_zone);
+    common_handlers_->safety_zone = safety_zone_;
     world_origin_units_           = old_world_origin_units;
     safety_area_horizontal_frame_ = old_safety_area_horizontal_frame;
     safety_area_vertical_frame_   = old_safety_area_vertical_frame;
     origin_y_                     = old_origin_y;
     origin_x_                     = old_origin_x;
     use_safety_area_              = old_use_safety_area;
-    safety_zone_->enableSafetyZone(use_safety_area_);
+    if (safety_zone_) {
+      safety_zone_->enableSafetyZone(use_safety_area_);
+    }
 
-    return false;
+    return true;
   }
 
   ROS_INFO("[SafetyAreaManager]: Succesfull service call, world config loaded.");
@@ -1397,7 +1406,6 @@ bool SafetyAreaManager::initializationFromMsg(const mrs_msgs::SafetyArea& safety
   // Update safety area configuration
   const auto safety_border = safety_area_msg.border;
   use_safety_area_         = safety_border.enabled;
-  safety_zone_->enableSafetyZone(use_safety_area_);
   safety_area_horizontal_frame_ = safety_border.horizontal_frame;
   safety_area_vertical_frame_   = safety_border.vertical_frame;
 
@@ -1408,6 +1416,11 @@ bool SafetyAreaManager::initializationFromMsg(const mrs_msgs::SafetyArea& safety
   const auto max_z  = safety_border.max_z;
   const auto min_z  = safety_border.min_z;
   auto       border = makePrism(border_points, max_z, min_z, safety_border.horizontal_frame, safety_border.vertical_frame);
+
+  if (!border) {
+    ROS_WARN("[SafetyAreaManager]: Failed to create the safety border prism!");
+    return false;
+  }
 
   // Making obstacle prisms
   std::vector<std::unique_ptr<mrs_lib::Prism>> obstacle_prisms;
@@ -1432,6 +1445,10 @@ bool SafetyAreaManager::initializationFromMsg(const mrs_msgs::SafetyArea& safety
     // Calculate the total number of points expected
     int total_expected_points = 0;
     for (const auto& row : rows) {
+      if (row < 0) {
+        ROS_WARN("[SafetyAreaManager]: Negative number of obstacle points in rows.");
+        return false;
+      }
       total_expected_points += row;
     }
 
@@ -1466,7 +1483,7 @@ bool SafetyAreaManager::initializationFromMsg(const mrs_msgs::SafetyArea& safety
 
     // Make obstacle prism
     for (const auto& obstacle : obstacles) {
-      auto prism = makePrism(obstacle.data, max_z, min_z, safety_border.horizontal_frame, safety_border.vertical_frame);
+      auto prism = makePrism(obstacle.data, obstacle.max_z, obstacle.min_z, safety_border.horizontal_frame, safety_border.vertical_frame);
 
       if (!prism) {
         ROS_WARN("[SafetyAreaManager]: Failed to create obstacle prism!");
@@ -1477,7 +1494,9 @@ bool SafetyAreaManager::initializationFromMsg(const mrs_msgs::SafetyArea& safety
     }
   }
 
-  safety_zone_ = std::make_unique<mrs_lib::SafetyZone>(*border, std::move(obstacle_prisms));
+  safety_zone_ = std::make_shared<mrs_lib::SafetyZone>(*border, std::move(obstacle_prisms));
+  safety_zone_->enableSafetyZone(use_safety_area_);
+  common_handlers_->safety_zone = safety_zone_;
 
   // Add visualizations
 
