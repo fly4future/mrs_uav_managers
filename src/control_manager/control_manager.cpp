@@ -6556,10 +6556,11 @@ double ControlManager::getMaxZ(const std::string& frame_id) {
       if(srv.response.success){
         auto ret = transformer_->transformSingle(srv.response.result, frame_id);
         if (!ret) {
+          // like a failed service call: no limit from this source
           ROS_ERROR_THROTTLE(1.0, "[ControlManager]: Could not transform safety area's max_z to '%s'", frame_id.c_str());
+        } else {
+          safety_area_max_z = ret->point.z;
         }
-
-        safety_area_max_z = ret->point.z;
       } else{
         ROS_WARN("[ControlManager]: SafetyAreaManager returned unsuccessfull result on getMaxZ");
       }
@@ -6589,9 +6590,9 @@ double ControlManager::getMaxZ(const std::string& frame_id) {
 
       if (!ret) {
         ROS_ERROR_THROTTLE(1.0, "[ControlManager]: SafetyArea: Could not transform estimation manager's max_z to the current control frame");
+      } else {
+        estimation_manager_max_z = ret->point.z;
       }
-
-      estimation_manager_max_z = ret->point.z;
     }
   }
 

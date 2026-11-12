@@ -1876,6 +1876,8 @@ double SafetyAreaManager::getMaxZ(const std::string& frame_id) {
 
   if (!ret) {
     ROS_ERROR_THROTTLE(1.0, "[ControlManager]: SafetyArea: Could not transform safety area's max_z to '%s'", frame_id.c_str());
+  } else {
+    safety_area_max_z = ret->point.z;
   }
   // | ------------ overwrite from estimation manager ----------- |
 
@@ -1898,9 +1900,9 @@ double SafetyAreaManager::getMaxZ(const std::string& frame_id) {
 
       if (!ret) {
         ROS_ERROR_THROTTLE(1.0, "[ControlManager]: SafetyArea: Could not transform estimation manager's max_z to the current control frame");
+      } else {
+        estimation_manager_max_z = ret->point.z;
       }
-
-      estimation_manager_max_z = ret->point.z;
     }
   }
 
