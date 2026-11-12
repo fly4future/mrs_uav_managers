@@ -109,6 +109,7 @@ private:
   std::vector<double>            obstacles_max_z_;
   std::vector<double>            obstacles_min_z_;
   std::mutex                     mutex_safety_area_;   // guards safety_zone_, its visualizations and the config
+  std::mutex                     mutex_set_world_config_;  // serializes set_world_config (shared temp file)
 
   // Visualization objects
   std::vector<std::unique_ptr<mrs_lib::StaticEdgesVisualization>> static_edges_;
@@ -823,6 +824,9 @@ bool SafetyAreaManager::callbackSetWorldConfig(mrs_msgs::String::Request& req, m
     res.success = false;
     return true;
   }
+
+  // concurrent calls would interleave writes to the same file
+  std::scoped_lock set_lock(mutex_set_world_config_);
 
   std::string   filename = "/tmp/cur_world_config.yaml";
   std::ofstream ofs(filename, std::ofstream::out | std::ofstream::trunc);
