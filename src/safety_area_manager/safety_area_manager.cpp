@@ -362,19 +362,26 @@ void SafetyAreaManager::initialize() {
   // The manager will just always return true untill it's turned on
   bool safety_zone_inited = false;
   try {
+    std::scoped_lock lock(mutex_safety_area_);
     safety_zone_inited = initializationFromFile(param_loader, _world_config_);
   }
   catch (std::invalid_argument& e) {
     ROS_ERROR("[SafetyAreaManager]: Wrong configuration for the safety zone polygons. %s", e.what());
-    ros::shutdown();
   }
   catch (XmlRpc::XmlRpcException& e) {
     ROS_ERROR("[SafetyAreaManager]: Error during parsing parameters. Please make sure parameters are written correctly");
-    ros::shutdown();
+  }
+  catch (std::exception& e) {
+    ROS_ERROR("[SafetyAreaManager]: Exception during safety area initialization: %s", e.what());
   }
   catch (...) {
     ROS_ERROR("[SafetyAreaManager]: Unhandled exception!");
+  }
+
+  if (!safety_zone_inited || !safety_zone_) {
+    ROS_ERROR("[SafetyAreaManager]: Failed to initialize safety area.");
     ros::shutdown();
+    return;
   }
 
   // | ----------------------- publishers ----------------------- |
@@ -422,11 +429,6 @@ void SafetyAreaManager::initialize() {
   timer_status_ = nh_.createTimer(ros::Rate(status_timer_rate_), &SafetyAreaManager::timerStatus, this);
 
   // | ----------------------- finish init ---------------------- |
-
-  if (!safety_zone_inited) {
-    ROS_ERROR("[SafetyAreaManager]: Failed to initialize safety area.");
-    ros::shutdown();
-  }
 
   is_initialized_ = true;
 
@@ -677,18 +679,27 @@ bool SafetyAreaManager::callbackLoadWorldConfig(mrs_msgs::String::Request& req, 
   auto old_origin_x                     = origin_x_;
   auto old_use_safety_area              = use_safety_area_;
 
-  mrs_lib::ParamLoader param_loader(nh_, "SafetyAreaManager");
-  bool                 success = initializationFromFile(param_loader, req.value);
+  bool success = false;
+  try {
+    mrs_lib::ParamLoader param_loader(nh_, "SafetyAreaManager");
+    success = initializationFromFile(param_loader, req.value);
+  }
+  catch (std::exception& e) {
+    // e.g. an invalid polygon; uncaught, it would leave safety_zone_ empty
+    ROS_WARN("[SafetyAreaManager]: Exception while loading world config: %s", e.what());
+    success = false;
+  }
 
   if (!success) {
     ROS_WARN("[SafetyAreaManager]: Could not read the file. Probably data format is not correct.");
-    // Restore from backup, if successful no need to delete the backups as they will get destroyed automatically
-    safety_zone_                  = std::move(old_safety_zone);
+    // Restore from backup, visualizations first (they point into the zone)
     static_edges_                 = std::move(old_static_edges);
     int_edges_                    = std::move(old_int_edges);
     vertices_                     = std::move(old_vertices);
     centers_                      = std::move(old_centers);
     bounds_                       = std::move(old_bounds);
+    safety_zone_                  = std::move(old_safety_zone);
+    common_handlers_->safety_zone = safety_zone_;
     world_origin_units_           = old_world_origin_units;
     safety_area_horizontal_frame_ = old_safety_area_horizontal_frame;
     safety_area_vertical_frame_   = old_safety_area_vertical_frame;
